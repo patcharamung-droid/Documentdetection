@@ -8,7 +8,7 @@ from extractor import (
 )
 
 
-st.set_page_config(page_title="กสทช. PDF to Excel", page_icon="📶", layout="wide")
+st.set_page_config(page_title="กสทช. PDF to CSV", page_icon="📶", layout="wide")
 
 st.title("ระบบสกัดรายงาน กสทช. เป็น Excel")
 st.write(
