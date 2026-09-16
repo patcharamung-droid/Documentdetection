@@ -23,23 +23,48 @@ def fix_thai_typos(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
+# ฟังก์ชันป้องกันไม่ให้เผลอดึงหัวข้อตารางมาเป็นข้อมูล
+def is_header(text):
+    clean_text = text.replace(" ", "")
+    headers = [
+        "หน่วยงาน:", "หน่วยงาน", "ที่อยู่:", "ที่อยู่", "ประเภทสถานีวิทยุคมนาคม", 
+        "เลขที่ใบอนุญาตตั้ง", "เลขที่ใบอนุญาตใช้", "ที่ตั้ง", "ตำบล", "อำเภอ", 
+        "จังหวัด", "รหัสไปรษณีย์", "Longtitude", "Longitude", "Latitude", "หมู่ที่:", "หมู่ที่"
+    ]
+    return clean_text in headers
+
 def find_idx(row, keywords):
     for i, cell in enumerate(row):
-        # ลบช่องว่างก่อนเทียบ เพื่อให้รองรับ "หน่วยงาน:" และ "หน่วยงาน :"
         cell_clean = cell.replace(" ", "")
         for k in keywords:
             if k.replace(" ", "") in cell_clean:
                 return i
     return -1
 
-def get_next_val(row, keywords):
-    idx = find_idx(row, keywords)
-    if idx != -1:
-        for j in range(idx + 1, len(row)):
-            val = row[j].strip()
-            # ตรวจสอบเพื่อไม่ให้ดึงค่าที่เป็น Header ซ้ำ
-            if val and not any(k.replace(" ", "") in val.replace(" ", "") for k in keywords):
-                return val
+# ฟังก์ชันค้นหาข้อมูลแบบ Smart Lookup (มองขวา ถ้าไม่มีให้มองล่าง)
+def get_val_in_block(block, keywords):
+    for r_idx, row in enumerate(block):
+        idx = find_idx(row, keywords)
+        if idx != -1:
+            # 1. หาในแถวเดียวกัน (คอลัมน์ถัดไปทางขวา)
+            for j in range(idx + 1, len(row)):
+                val = row[j].strip()
+                if val and not is_header(val):
+                    return val
+            
+            # 2. ถ้าแถวเดียวกันไม่มี ให้หาในแถวถัดไป (บรรทัดล่าง)
+            if r_idx + 1 < len(block):
+                next_row = block[r_idx + 1]
+                # ลองดึงจากคอลัมน์ที่ตรงกันในบรรทัดล่าง
+                if idx < len(next_row):
+                    val = next_row[idx].strip()
+                    if val and not is_header(val):
+                        return val
+                # ถ้าไม่เจอ ลองหาคำแรกในบรรทัดล่างที่ไม่ใช่ Header
+                for cell in next_row:
+                    val = cell.strip()
+                    if val and not is_header(val):
+                        return val
     return ""
 
 def clean_join(seq):
@@ -70,10 +95,11 @@ if uploaded_file is not None:
                     if any(cleaned):
                         clean_rows.append(cleaned)
                 
+                # ตัดขึ้นสถานีใหม่เมื่อเจอคำว่า "หน่วยงาน" อย่างเดียว
                 blocks = []
                 current_block = []
                 for row in clean_rows:
-                    if find_idx(row, ['หน่วยงาน:', 'หน่วยงาน']) != -1 and 'บริษัท' in "".join(row):
+                    if find_idx(row, ['หน่วยงาน']) != -1:
                         if current_block:
                             blocks.append(current_block)
                         current_block = [row]
@@ -86,63 +112,37 @@ if uploaded_file is not None:
                 row_index = 1
                 
                 for block in blocks:
+                    # ดึงข้อมูลด้วยระบบ Smart Lookup
                     data = {
-                        'operator': "", 'license': "", 'location': "", 'subdistrict': "", 
-                        'district': "", 'province': "", 'zipcode': "", 'lon': "", 'lat': "",
-                        'max_dist_text': "", 'max_dist_val': "", 'max_rad': "", 
-                        'date_calc': "", 'signature': "", 'date_report': ""
+                        'operator': get_val_in_block(block, ['หน่วยงาน']),
+                        'license': get_val_in_block(block, ['เลขที่ใบอนุญาตตั้ง']),
+                        'location': get_val_in_block(block, ['ที่ตั้ง']),
+                        'subdistrict': get_val_in_block(block, ['ตำบล']),
+                        'district': get_val_in_block(block, ['อำเภอ']),
+                        'province': get_val_in_block(block, ['จังหวัด']),
+                        'zipcode': get_val_in_block(block, ['รหัสไปรษณีย์']),
+                        'lon': get_val_in_block(block, ['Longitude', 'Longtitude']),
+                        'lat': get_val_in_block(block, ['Latitude']),
+                        'date_calc': get_val_in_block(block, ['วันที่วัด/คำนวณ']),
+                        'signature': get_val_in_block(block, ['ผู้มีอำนาจลงนาม']),
+                        'date_report': get_val_in_block(block, ['วันที่รายงาน']),
+                        'max_dist_text': "", 'max_dist_val': "", 'max_rad': ""
                     }
+                    
                     freq_rows = []
                     
                     for row in block:
-                        if find_idx(row, ['หน่วยงาน']) != -1:
-                            data['operator'] = get_next_val(row, ['หน่วยงาน'])
-                        elif find_idx(row, ['เลขที่ใบอนุญาตตั้ง']) != -1:
-                            data['license'] = get_next_val(row, ['เลขที่ใบอนุญาตตั้ง'])
-                        elif find_idx(row, ['ที่ตั้ง']) != -1:
-                            data['location'] = get_next_val(row, ['ที่ตั้ง'])
-                        elif find_idx(row, ['ตำบล']) != -1:
-                            data['subdistrict'] = get_next_val(row, ['ตำบล'])
-                            data['district'] = get_next_val(row, ['อำเภอ'])
-                        elif find_idx(row, ['จังหวัด']) != -1:
-                            data['province'] = get_next_val(row, ['จังหวัด'])
-                            data['zipcode'] = get_next_val(row, ['รหัสไปรษณีย์'])
-                            
-                        # รองรับคำว่า Longitude และ Longtitude
-                        elif find_idx(row, ['Longitude', 'Longtitude']) != -1:
-                            l_idx = find_idx(row, ['Longitude', 'Longtitude'])
-                            if l_idx != -1:
-                                for j in range(l_idx + 1, len(row)):
-                                    val = row[j].strip()
-                                    if val and "Long" not in val and "Lat" not in val:
-                                        data['lon'] = val
-                                        break
-                            lat_idx = find_idx(row, ['Latitude'])
-                            if lat_idx != -1:
-                                for j in range(lat_idx + 1, len(row)):
-                                    val = row[j].strip()
-                                    if val and "Lat" not in val:
-                                        data['lat'] = val
-                                        break
-                                        
                         # สกัดค่าระดับสูงสุด 
-                        elif find_idx(row, ['ระดับการแผ่คลื่นแม่เหล็กไฟฟ้าสูงสุด']) != -1 and '=' not in "".join(row):
+                        if find_idx(row, ['ระดับการแผ่คลื่นแม่เหล็กไฟฟ้าสูงสุด']) != -1 and '=' not in "".join(row):
                             data['max_dist_text'] = 'ระดับสูงสุด'
                             vals = [x for x in row if x.strip()]
                             if len(vals) >= 3:
                                 data['max_dist_val'] = vals[1]
                                 data['max_rad'] = vals[2]
-                            elif len(vals) == 2: # เผื่อกรณีคอลัมน์เลื่อน
+                            elif len(vals) == 2:
                                 data['max_dist_val'] = vals[1]
                                 
-                        # รองรับ "วันที่วัด/คำนวณ" และ "วันที่วัด / คำนวณ"
-                        elif find_idx(row, ['วันที่วัด/คำนวณ', 'วันที่วัด/คำนวณ']) != -1:
-                            data['date_calc'] = get_next_val(row, ['วันที่วัด/คำนวณ'])
-                        elif find_idx(row, ['ผู้มีอำนาจลงนาม']) != -1:
-                            data['signature'] = get_next_val(row, ['ผู้มีอำนาจลงนาม'])
-                        elif find_idx(row, ['วันที่รายงาน']) != -1:
-                            data['date_report'] = get_next_val(row, ['วันที่รายงาน'])
-                            
+                        # สกัดข้อมูลตารางความถี่
                         non_empty = [x for x in row if x.strip()]
                         if non_empty and re.match(r'^\d+$', non_empty[0]) and "เมตร" not in non_empty[0] and len(non_empty) >= 5:
                             freq_rows.append(non_empty)
