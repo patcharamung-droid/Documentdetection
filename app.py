@@ -141,32 +141,36 @@ if uploaded_file is not None:
                     else:
                         freqs = brands = models = powers = gains = heights = ""
 
-                    record = {
-                        'ลำดับที่': row_index,
-                        'ผู้ประกอบการ': data['operator'],
-                        'เลขที่ใบอนุญาตตั้ง': data['license'],
-                        'ที่ตั้ง': data['location'],
-                        'ตำบล': data['subdistrict'],
-                        'อำเภอ': data['district'],
-                        'จังหวัด': data['province'],
-                        'รหัสไปรษณีย์': data['zipcode'],
-                        'Longitude': data['lon'],
-                        'Latitude': data['lat'],
-                        'ความถี่': freqs,
-                        'ตราอักษร': brands,
-                        'รุ่น/แบบ': models,
-                        'กำลังส่ง (วัตต์)': powers,
-                        'อัตราขยายสายอากาศ (dBi)': gains,
-                        'ความสูงสายอากาศ (เมตร)': heights,
-                        'ระยะห่างจากเสา ที่ต้ังสายอากาศ': data['max_dist_text'],
-                        'ระยะที่วัด/คำนวณ (เมตร)': data['max_dist_val'],
-                        'ระดับการแผ่คลื่นแม่เหล็กไฟฟ้าสูงสุด': data['max_rad'],
-                        'วันที่วัด/คำนวณ': data['date_calc'],
-                        'ลงชื่อ': data['signature'],
-                        'วันที่รายงาน': data['date_report']
-                    }
-                    parsed_data.append(record)
-                    row_index += 1
+                    # ==========================================
+                    # เพิ่มเงื่อนไข: ตรวจสอบว่ามีข้อมูลผู้ประกอบการ หรือความถี่ ถึงจะบันทึก
+                    # ==========================================
+                    if data['operator'] != "" or freqs != "":
+                        record = {
+                            'ลำดับที่': row_index,
+                            'ผู้ประกอบการ': data['operator'],
+                            'เลขที่ใบอนุญาตตั้ง': data['license'],
+                            'ที่ตั้ง': data['location'],
+                            'ตำบล': data['subdistrict'],
+                            'อำเภอ': data['district'],
+                            'จังหวัด': data['province'],
+                            'รหัสไปรษณีย์': data['zipcode'],
+                            'Longitude': data['lon'],
+                            'Latitude': data['lat'],
+                            'ความถี่': freqs,
+                            'ตราอักษร': brands,
+                            'รุ่น/แบบ': models,
+                            'กำลังส่ง (วัตต์)': powers,
+                            'อัตราขยายสายอากาศ (dBi)': gains,
+                            'ความสูงสายอากาศ (เมตร)': heights,
+                            'ระยะห่างจากเสา ที่ต้ังสายอากาศ': data['max_dist_text'],
+                            'ระยะที่วัด/คำนวณ (เมตร)': data['max_dist_val'],
+                            'ระดับการแผ่คลื่นแม่เหล็กไฟฟ้าสูงสุด': data['max_rad'],
+                            'วันที่วัด/คำนวณ': data['date_calc'],
+                            'ลงชื่อ': data['signature'],
+                            'วันที่รายงาน': data['date_report']
+                        }
+                        parsed_data.append(record)
+                        row_index += 1  # ให้นับลำดับเฉพาะตอนที่มีข้อมูลจริงๆ
                 
                 # 5. สรุปเป็นไฟล์ Excel
                 if parsed_data:
