@@ -57,7 +57,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.expander("ข้อมูลที่ระบบสกัด", expanded=False):
+with st.expander("ข้อมูลที่ระบบตรวจสอบ", expanded=False):
     st.write(
         "ผู้ประกอบการ ใบอนุญาต ที่ตั้ง พิกัด รายละเอียดความถี่ "
         "ระดับการแผ่คลื่นแม่เหล็กไฟฟ้าสูงสุด วันที่วัด/คำนวณ ผู้ลงนาม และวันที่รายงาน"
