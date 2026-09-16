@@ -10,6 +10,9 @@ import unicodedata
 from typing import Iterable, Sequence
 
 import pdfplumber
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 
 REPORT_COLUMNS = [
@@ -363,3 +366,44 @@ def create_csv_bytes(records: Sequence[dict[str, object]], columns: Sequence[str
     writer.writeheader()
     writer.writerows(records)
     return output.getvalue().encode("utf-8-sig")
+
+
+def _add_excel_sheet(workbook: Workbook, title: str, records: Sequence[dict[str, object]], columns: Sequence[str]) -> None:
+    """Add a clean, filterable worksheet without changing the extracted values."""
+    worksheet = workbook.create_sheet(title)
+    worksheet.append(list(columns))
+    for record in records:
+        worksheet.append([record.get(column, "") for column in columns])
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for row in worksheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+    worksheet.row_dimensions[1].height = 34
+
+    for column_index, cells in enumerate(worksheet.iter_cols(), start=1):
+        longest_value = max((len(str(cell.value or "")) for cell in cells), default=10)
+        worksheet.column_dimensions[get_column_letter(column_index)].width = max(12, min(longest_value + 2, 42))
+
+
+def create_excel_bytes(
+    report_records: Sequence[dict[str, object]], qa_records: Sequence[dict[str, object]]
+) -> bytes:
+    """Create an Excel report with the main data and a separate review worksheet."""
+    workbook = Workbook()
+    workbook.remove(workbook.active)
+    _add_excel_sheet(workbook, "Report_Data", report_records, REPORT_COLUMNS)
+    _add_excel_sheet(workbook, "ตรวจสอบข้อมูล", qa_records, QA_COLUMNS)
+
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
