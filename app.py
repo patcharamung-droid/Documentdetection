@@ -1,19 +1,21 @@
 import streamlit as st
 
 from extractor import (
+    QA_COLUMNS,
+    REPORT_COLUMNS,
     build_qa_records,
     build_report_records,
-    create_excel_bytes,
+    create_csv_bytes,
     parse_pdf_bytes,
 )
 
 
 st.set_page_config(page_title="กสทช. PDF to CSV", page_icon="📶", layout="wide")
 
-st.title("ระบบสกัดรายงาน กสทช. เป็น Excel")
+st.title("ระบบสกัดรายงาน กสทช. เป็น CSV")
 st.write(
     "อัปโหลดรายงาน PDF ได้หลายไฟล์ ระบบจะแยกข้อมูลทีละหน้า "
-    "จึงรองรับทั้งรายงาน 1 สถานีต่อไฟล์และหลายสถานีในไฟล์เดียว"
+    "จึงรองรับทั้งรายงาน 1 สถานีต่อไฟล์และหลายสถานีในไฟล์เดียว โดยส่งออกเป็น CSV"
 )
 
 with st.expander("ข้อมูลที่ระบบสกัด", expanded=False):
@@ -30,7 +32,7 @@ uploaded_files = st.file_uploader(
 )
 
 output_mode = st.radio(
-    "รูปแบบข้อมูลใน Excel",
+    "รูปแบบข้อมูลใน CSV",
     options=("สรุป 1 แถวต่อสถานี", "ละเอียด 1 แถวต่อความถี่"),
     horizontal=True,
 )
@@ -53,19 +55,20 @@ if st.button("เริ่มสกัดข้อมูล", type="primary", di
         detail_mode = output_mode == "ละเอียด 1 แถวต่อความถี่"
         report_records = build_report_records(all_stations, detail_mode)
         qa_records = build_qa_records(all_stations)
-        excel_data = create_excel_bytes(report_records, qa_records)
+        report_csv = create_csv_bytes(report_records, REPORT_COLUMNS)
+        qa_csv = create_csv_bytes(qa_records, QA_COLUMNS)
 
         needs_review = sum(1 for row in qa_records if row["สถานะ"] == "ต้องตรวจสอบ")
         left, middle, right = st.columns(3)
         left.metric("สถานีที่พบ", len(all_stations))
-        middle.metric("แถวใน Excel", len(report_records))
+        middle.metric("แถวใน CSV", len(report_records))
         right.metric("หน้าที่ต้องตรวจสอบ", needs_review)
 
         st.subheader("ตัวอย่างข้อมูล")
         st.dataframe(report_records[:20], use_container_width=True, hide_index=True)
 
         if needs_review:
-            st.warning("บางหน้าอ่านข้อมูลได้ไม่ครบ โปรดเปิดแผ่นงาน “ตรวจสอบข้อมูล” ใน Excel ก่อนนำไปใช้งาน")
+            st.warning("บางหน้าอ่านข้อมูลได้ไม่ครบ โปรดตรวจไฟล์ผลตรวจสอบก่อนนำรายงานไปใช้งาน")
             st.dataframe(
                 [row for row in qa_records if row["สถานะ"] == "ต้องตรวจสอบ"],
                 use_container_width=True,
@@ -76,10 +79,19 @@ if st.button("เริ่มสกัดข้อมูล", type="primary", di
             with st.expander(f"รายละเอียด {len(all_errors)} หน้าที่อ่านไม่ได้"):
                 st.write(all_errors)
 
-        st.download_button(
-            label="ดาวน์โหลดไฟล์ Excel",
-            data=excel_data,
-            file_name="NBTC_Report_Summary.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
-        )
+        download_report, download_qa = st.columns(2)
+        with download_report:
+            st.download_button(
+                label="ดาวน์โหลดรายงาน CSV",
+                data=report_csv,
+                file_name="NBTC_Report_Summary.csv",
+                mime="text/csv",
+                type="primary",
+            )
+        with download_qa:
+            st.download_button(
+                label="ดาวน์โหลดผลตรวจสอบ CSV",
+                data=qa_csv,
+                file_name="NBTC_Report_Validation.csv",
+                mime="text/csv",
+            )
