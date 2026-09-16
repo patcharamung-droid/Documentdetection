@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass
-from io import BytesIO
+from io import BytesIO, StringIO
 import re
 import unicodedata
 from typing import Iterable, Sequence
 
-import pandas as pd
 import pdfplumber
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
 
 
 REPORT_COLUMNS = [
@@ -69,7 +67,6 @@ _THAI_TYPO_FIXES = {
     "กระทา การ": "กระทำการ",
     "บริษทั": "บริษัท",
     "รหัสไปรษณยี ์": "รหัสไปรษณีย์",
-
 }
 
 
@@ -359,48 +356,10 @@ def build_qa_records(stations: Sequence[StationPage]) -> list[dict[str, str]]:
     return records
 
 
-def _format_worksheet(worksheet, *, status_column: int | None = None) -> None:
-    header_fill = PatternFill("solid", fgColor="1F4E78")
-    header_font = Font(color="FFFFFF", bold=True)
-    warning_fill = PatternFill("solid", fgColor="FFF2CC")
-    normal_fill = PatternFill("solid", fgColor="E2F0D9")
-
-    worksheet.freeze_panes = "A2"
-    worksheet.auto_filter.ref = worksheet.dimensions
-    worksheet.row_dimensions[1].height = 34
-
-    for cell in worksheet[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-    for row in worksheet.iter_rows(min_row=2):
-        for cell in row:
-            cell.alignment = Alignment(vertical="top", wrap_text=True)
-
-    if status_column:
-        for row_number in range(2, worksheet.max_row + 1):
-            status_cell = worksheet.cell(row=row_number, column=status_column)
-            status_cell.fill = normal_fill if status_cell.value == "พร้อมใช้งาน" else warning_fill
-
-    for column_number, cells in enumerate(worksheet.iter_cols(), start=1):
-        longest = max((len(str(cell.value or "")) for cell in cells), default=10)
-        width = max(12, min(longest + 2, 42))
-        worksheet.column_dimensions[get_column_letter(column_number)].width = width
-
-
-def create_excel_bytes(
-    report_records: Sequence[dict[str, str]], qa_records: Sequence[dict[str, str]]
-) -> bytes:
-    """Create a filterable report sheet plus a separate, non-blocking QA sheet."""
-    report_df = pd.DataFrame(report_records, columns=REPORT_COLUMNS)
-    qa_df = pd.DataFrame(qa_records, columns=QA_COLUMNS)
-    output = BytesIO()
-
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        report_df.to_excel(writer, index=False, sheet_name="Report_Data")
-        qa_df.to_excel(writer, index=False, sheet_name="ตรวจสอบข้อมูล")
-        _format_worksheet(writer.sheets["Report_Data"])
-        _format_worksheet(writer.sheets["ตรวจสอบข้อมูล"], status_column=3)
-
-    return output.getvalue()
+def create_csv_bytes(records: Sequence[dict[str, object]], columns: Sequence[str]) -> bytes:
+    """Create a UTF-8-with-BOM CSV so Thai text opens correctly in Excel."""
+    output = StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=columns, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(records)
+    return output.getvalue().encode("utf-8-sig")
