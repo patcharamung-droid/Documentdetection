@@ -71,7 +71,7 @@ uploaded_files = st.file_uploader(
 )
 
 output_mode = st.radio(
-    "รูปแบบข้อมูลที่ต้องการสกัด",
+    "รูปแบบข้อมูลที่ต้องการ",
     options=("สรุป 1 แถวต่อสถานี", "ละเอียด 1 แถวต่อความถี่"),
     horizontal=True,
 )
