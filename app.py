@@ -27,7 +27,7 @@ except ImportError:
     st.info("commit app.py, extractor.py และ requirements.txt เวอร์ชันล่าสุด แล้ว redeploy อีกครั้ง")
     st.stop()
 
-st.title("ระบบตรวจพิจารณาเอกสาร")
+st.title("ระบบตรวจสอบเอกสาร")
 st.write(
     "อัปโหลดรายงาน PDF ได้หลายไฟล์ ระบบจะแยกข้อมูลทีละหน้า "
     "จึงรองรับทั้งรายงาน 1 สถานีต่อไฟล์และหลายสถานีในไฟล์เดียว"
