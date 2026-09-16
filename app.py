@@ -8,6 +8,7 @@ try:
         REPORT_COLUMNS,
         build_qa_records,
         build_report_records,
+        create_excel_bytes,
         create_csv_bytes,
         parse_pdf_bytes,
     )
@@ -26,10 +27,34 @@ except ImportError:
     st.info("commit app.py, extractor.py และ requirements.txt เวอร์ชันล่าสุด แล้ว redeploy อีกครั้ง")
     st.stop()
 
-st.title("ระบบสกัดรายงาน กสทช. เป็น CSV")
+st.title("ระบบสกัดรายงาน กสทช. เป็น Excel หรือ CSV")
 st.write(
     "อัปโหลดรายงาน PDF ได้หลายไฟล์ ระบบจะแยกข้อมูลทีละหน้า "
-    "จึงรองรับทั้งรายงาน 1 สถานีต่อไฟล์และหลายสถานีในไฟล์เดียว โดยส่งออกเป็น CSV"
+    "จึงรองรับทั้งรายงาน 1 สถานีต่อไฟล์และหลายสถานีในไฟล์เดียว"
+)
+
+st.markdown(
+    """
+    <style>
+    div[data-testid="stDownloadButton"] > button {
+        width: 100%;
+        min-height: 3.2rem;
+        border-radius: 12px;
+        font-weight: 700;
+        font-size: 1rem;
+    }
+    .download-heading {
+        margin-bottom: 0.15rem;
+        font-size: 1.1rem;
+        font-weight: 700;
+    }
+    .download-detail {
+        color: #5d6570;
+        min-height: 3rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
 )
 
 with st.expander("ข้อมูลที่ระบบสกัด", expanded=False):
@@ -46,7 +71,7 @@ uploaded_files = st.file_uploader(
 )
 
 output_mode = st.radio(
-    "รูปแบบข้อมูลใน CSV",
+    "รูปแบบข้อมูลที่ต้องการสกัด",
     options=("สรุป 1 แถวต่อสถานี", "ละเอียด 1 แถวต่อความถี่"),
     horizontal=True,
 )
@@ -70,7 +95,7 @@ if st.button("เริ่มสกัดข้อมูล", type="primary", di
         report_records = build_report_records(all_stations, detail_mode)
         qa_records = build_qa_records(all_stations)
         report_csv = create_csv_bytes(report_records, REPORT_COLUMNS)
-        qa_csv = create_csv_bytes(qa_records, QA_COLUMNS)
+        excel_data = create_excel_bytes(report_records, qa_records)
 
         needs_review = sum(1 for row in qa_records if row["สถานะ"] == "ต้องตรวจสอบ")
         left, middle, right = st.columns(3)
@@ -93,19 +118,33 @@ if st.button("เริ่มสกัดข้อมูล", type="primary", di
             with st.expander(f"รายละเอียด {len(all_errors)} หน้าที่อ่านไม่ได้"):
                 st.write(all_errors)
 
-        download_report, download_qa = st.columns(2)
-        with download_report:
+        st.subheader("ดาวน์โหลดผลลัพธ์")
+        st.caption("เลือกชนิดไฟล์ตามลักษณะงานของคุณ ข้อมูลรายงานหลักเหมือนกันทั้งสองแบบ")
+        download_excel, download_csv = st.columns(2, gap="large")
+        with download_excel:
+            st.markdown('<div class="download-heading">Excel (.xlsx)</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="download-detail">เหมาะสำหรับเปิด ตรวจสอบ กรอง และจัดรูปแบบต่อใน Excel<br>มีแผ่นงานรายงานหลักและผลตรวจสอบ</div>',
+                unsafe_allow_html=True,
+            )
             st.download_button(
-                label="ดาวน์โหลดรายงาน CSV",
+                label="ดาวน์โหลด Excel",
+                data=excel_data,
+                file_name="NBTC_Report_Summary.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                key="download_excel",
+            )
+        with download_csv:
+            st.markdown('<div class="download-heading">CSV (.csv)</div>', unsafe_allow_html=True)
+            st.markdown(
+                '<div class="download-detail">เหมาะสำหรับนำเข้าโปรแกรมหรือฐานข้อมูลอย่างรวดเร็ว<br>มีเฉพาะรายงานหลัก 22 คอลัมน์</div>',
+                unsafe_allow_html=True,
+            )
+            st.download_button(
+                label="ดาวน์โหลด CSV",
                 data=report_csv,
                 file_name="NBTC_Report_Summary.csv",
                 mime="text/csv",
-                type="primary",
-            )
-        with download_qa:
-            st.download_button(
-                label="ดาวน์โหลดผลตรวจสอบ CSV",
-                data=qa_csv,
-                file_name="NBTC_Report_Validation.csv",
-                mime="text/csv",
+                key="download_csv",
             )
