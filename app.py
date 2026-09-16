@@ -1,16 +1,30 @@
 import streamlit as st
 
-from extractor import (
-    QA_COLUMNS,
-    REPORT_COLUMNS,
-    build_qa_records,
-    build_report_records,
-    create_csv_bytes,
-    parse_pdf_bytes,
-)
-
-
 st.set_page_config(page_title="กสทช. PDF to CSV", page_icon="📶", layout="wide")
+
+try:
+    from extractor import (
+        QA_COLUMNS,
+        REPORT_COLUMNS,
+        build_qa_records,
+        build_report_records,
+        create_csv_bytes,
+        parse_pdf_bytes,
+    )
+except ModuleNotFoundError as error:
+    if error.name == "extractor":
+        st.error("ไม่พบไฟล์ extractor.py ในโปรเจกต์ที่นำขึ้น Streamlit Cloud")
+        st.info("เพิ่มไฟล์ extractor.py ไว้โฟลเดอร์เดียวกับ app.py แล้ว commit และ redeploy อีกครั้ง")
+    elif error.name == "pdfplumber":
+        st.error("ยังไม่ได้ติดตั้งไลบรารี pdfplumber")
+        st.info("ตรวจว่ามี requirements.txt อยู่โฟลเดอร์เดียวกับ app.py และมีบรรทัด pdfplumber>=0.11,<1")
+    else:
+        st.error(f"ไม่พบไลบรารีที่จำเป็น: {error.name}")
+    st.stop()
+except ImportError:
+    st.error("ไฟล์ extractor.py ใน Streamlit Cloud ไม่ตรงกับ app.py เวอร์ชันปัจจุบัน")
+    st.info("commit app.py, extractor.py และ requirements.txt เวอร์ชันล่าสุด แล้ว redeploy อีกครั้ง")
+    st.stop()
 
 st.title("ระบบสกัดรายงาน กสทช. เป็น CSV")
 st.write(
