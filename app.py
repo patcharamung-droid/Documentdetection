@@ -6,7 +6,7 @@ import re
 
 st.set_page_config(page_title="กสทช. PDF to Excel", page_icon="📶", layout="wide")
 st.title("📶 ระบบสกัดข้อมูลรายงาน กสทช. เป็น Excel")
-st.write("อัปโหลดไฟล์ PDF แบบรายงานระดับการแผ่คลื่นแม่เหล็กไฟฟ้า ระบบจะจัดเรียงข้อมูลใหม่เป็น 22 คอลัมน์มาตรฐาน")
+st.write("อัปโหลดไฟล์ PDF แบบรายงานระดับการแผ่คลื่นแม่เหล็กไฟฟ้า ระบบจะจัดเรียงข้อมูลใหม่เป็น 22 คอลัมน์ (1 สถานี ต่อ 1 แถว)")
 
 uploaded_file = st.file_uploader("เลือกไฟล์ PDF ของคุณ", type=["pdf"])
 
@@ -23,10 +23,18 @@ def get_next_val(row, keywords):
     if idx != -1:
         for j in range(idx + 1, len(row)):
             val = row[j].strip()
-            # ป้องกันการดึงคำซ้ำ (เช่น หัวข้อตารางซ้อนกัน) มาเป็นข้อมูล
             if val and not any(k in val for k in keywords):
                 return val
     return ""
+
+# ฟังก์ชันยุบรวมข้อมูลความถี่ (ถ้าเหมือนกันหมดจะแสดงค่าเดียว ถ้าต่างกันจะคั่นด้วยลูกน้ำ)
+def clean_join(seq):
+    if not seq: return ""
+    seq = [str(x).strip() for x in seq if str(x).strip()] # ล้างค่าว่าง
+    if not seq: return ""
+    if len(set(seq)) == 1: # ถ้าข้อมูลทุกบรรทัดเหมือนกัน (เช่น ความสูง 45.0)
+        return seq[0]
+    return ", ".join(seq) # ถ้าต่างกัน ให้คั่นด้วยลูกน้ำ
 
 if uploaded_file is not None:
     if st.button("เริ่มสกัดข้อมูล"):
@@ -117,39 +125,48 @@ if uploaded_file is not None:
                         elif find_idx(row, ['วนั ที่รายงาน', 'วันที่รายงาน']) != -1:
                             data['date_report'] = get_next_val(row, ['วนั ที่รายงาน', 'วันที่รายงาน'])
                             
-                        # สกัดข้อมูลความถี่
+                        # เก็บข้อมูลตารางความถี่
                         non_empty = [x for x in row if x.strip()]
                         if non_empty and re.match(r'^\d+$', non_empty[0]) and "เมตร" not in non_empty[0] and len(non_empty) >= 5:
                             freq_rows.append(non_empty)
 
-                    # 4. ประกอบร่างข้อมูลเป็น 22 คอลัมน์
-                    for freq_row in freq_rows:
-                        record = {
-                            'ลำดับที่': row_index,
-                            'ผู้ประกอบการ': data['operator'],
-                            'เลขที่ใบอนุญาตตั้ง': data['license'],
-                            'ที่ตั้ง': data['location'],
-                            'ตำบล': data['subdistrict'],
-                            'อำเภอ': data['district'],
-                            'จังหวัด': data['province'],
-                            'รหัสไปรษณีย์': data['zipcode'],
-                            'Longitude': data['lon'],
-                            'Latitude': data['lat'],
-                            'ความถี่': freq_row[0] if len(freq_row) > 0 else "",
-                            'ตราอักษร': freq_row[1] if len(freq_row) > 1 else "",
-                            'รุ่น/แบบ': freq_row[2] if len(freq_row) > 2 else "",
-                            'กำลังส่ง (วัตต์)': freq_row[3] if len(freq_row) > 3 else "",
-                            'อัตราขยายสายอากาศ (dBi)': freq_row[4] if len(freq_row) > 4 else "",
-                            'ความสูงสายอากาศ (เมตร)': freq_row[5] if len(freq_row) > 5 else "",
-                            'ระยะห่างจากเสา ที่ต้ังสายอากาศ': data['max_dist_text'],
-                            'ระยะที่วัด/คำนวณ (เมตร)': data['max_dist_val'],
-                            'ระดับการแผ่คลื่นแม่เหล็กไฟฟ้าสูงสุด': data['max_rad'],
-                            'วันที่วัด/คำนวณ': data['date_calc'],
-                            'ลงชื่อ': data['signature'],
-                            'วันที่รายงาน': data['date_report']
-                        }
-                        parsed_data.append(record)
-                        row_index += 1
+                    # 4. ประกอบร่างข้อมูล 1 สถานี ต่อ 1 แถว (ยุบข้อมูลความถี่)
+                    if freq_rows:
+                        freqs = clean_join([f[0] for f in freq_rows if len(f) > 0])
+                        brands = clean_join([f[1] for f in freq_rows if len(f) > 1])
+                        models = clean_join([f[2] for f in freq_rows if len(f) > 2])
+                        powers = clean_join([f[3] for f in freq_rows if len(f) > 3])
+                        gains = clean_join([f[4] for f in freq_rows if len(f) > 4])
+                        heights = clean_join([f[5] for f in freq_rows if len(f) > 5])
+                    else:
+                        freqs = brands = models = powers = gains = heights = ""
+
+                    record = {
+                        'ลำดับที่': row_index,
+                        'ผู้ประกอบการ': data['operator'],
+                        'เลขที่ใบอนุญาตตั้ง': data['license'],
+                        'ที่ตั้ง': data['location'],
+                        'ตำบล': data['subdistrict'],
+                        'อำเภอ': data['district'],
+                        'จังหวัด': data['province'],
+                        'รหัสไปรษณีย์': data['zipcode'],
+                        'Longitude': data['lon'],
+                        'Latitude': data['lat'],
+                        'ความถี่': freqs,
+                        'ตราอักษร': brands,
+                        'รุ่น/แบบ': models,
+                        'กำลังส่ง (วัตต์)': powers,
+                        'อัตราขยายสายอากาศ (dBi)': gains,
+                        'ความสูงสายอากาศ (เมตร)': heights,
+                        'ระยะห่างจากเสา ที่ต้ังสายอากาศ': data['max_dist_text'],
+                        'ระยะที่วัด/คำนวณ (เมตร)': data['max_dist_val'],
+                        'ระดับการแผ่คลื่นแม่เหล็กไฟฟ้าสูงสุด': data['max_rad'],
+                        'วันที่วัด/คำนวณ': data['date_calc'],
+                        'ลงชื่อ': data['signature'],
+                        'วันที่รายงาน': data['date_report']
+                    }
+                    parsed_data.append(record)
+                    row_index += 1
                 
                 # 5. สรุปเป็นไฟล์ Excel
                 if parsed_data:
@@ -161,14 +178,14 @@ if uploaded_file is not None:
                         final_df.to_excel(writer, index=False, sheet_name='Report_Data')
                     processed_data = output.getvalue()
                     
-                    st.success(f"สกัดข้อมูลสำเร็จ! พบข้อมูลทั้งหมด {len(final_df)} ชุดความถี่ 🎉")
+                    st.success(f"สกัดข้อมูลสำเร็จ! สรุปข้อมูลทั้งหมด {len(final_df)} สถานี 🎉")
                     st.download_button(
                         label="📥 ดาวน์โหลดไฟล์ Excel",
                         data=processed_data,
-                        file_name="NBTC_Structured_Report.xlsx",
+                        file_name="NBTC_Report_Summary.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                     )
                 else:
-                    st.warning("ไม่พบข้อมูลความถี่ในแบบฟอร์มครับ")
+                    st.warning("ไม่พบข้อมูลสถานีในแบบฟอร์มครับ")
             else:
                 st.warning("ไม่พบโครงสร้างตารางในไฟล์ PDF ครับ")
