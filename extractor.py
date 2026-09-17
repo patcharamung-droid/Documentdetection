@@ -688,14 +688,61 @@ def _add_excel_sheet(workbook: Workbook, title: str, records: Sequence[dict[str,
         worksheet.column_dimensions[get_column_letter(column_index)].width = max(12, min(longest_value + 2, 42))
 
 
+def _add_license_check_columns(worksheet) -> None:
+    """Add ready-to-use licence lookup columns beside the report data."""
+    input_column = len(REPORT_COLUMNS) + 1
+    result_column = input_column + 1
+    input_letter = get_column_letter(input_column)
+    result_letter = get_column_letter(result_column)
+    report_last_row = worksheet.max_row
+    check_last_row = max(report_last_row, 1001)
+    license_range = f"$C$2:$C${max(report_last_row, 2)}"
+
+    header_fill = PatternFill("solid", fgColor="C55A11")
+    result_fill = PatternFill("solid", fgColor="E2F0D9")
+    input_fill = PatternFill("solid", fgColor="FFF2CC")
+    header_font = Font(color="FFFFFF", bold=True)
+
+    input_header = worksheet.cell(1, input_column, "เลขที่ใบอนุญาตที่ต้องการตรวจสอบ\n(วางเลขที่นี่)")
+    result_header = worksheet.cell(1, result_column, "ผลการตรวจสอบ")
+    for cell in (input_header, result_header):
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    for row_number in range(2, check_last_row + 1):
+        input_cell = worksheet.cell(row_number, input_column)
+        input_cell.number_format = "@"
+        input_cell.fill = input_fill
+        input_cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+        result_cell = worksheet.cell(row_number, result_column)
+        result_cell.value = (
+            f'=IF({input_letter}{row_number}="","",'
+            f'IF(COUNTIFS({license_range},{input_letter}{row_number})>0,"พบ","ไม่พบ"))'
+        )
+        result_cell.fill = result_fill
+        result_cell.alignment = Alignment(horizontal="center", vertical="top", wrap_text=True)
+
+    worksheet.column_dimensions[input_letter].width = 31
+    worksheet.column_dimensions[result_letter].width = 18
+    worksheet.row_dimensions[1].height = 42
+    worksheet.auto_filter.ref = f"A1:V{report_last_row}"
+
+
 def create_excel_bytes(
     report_records: Sequence[dict[str, object]], qa_records: Sequence[dict[str, object]]
 ) -> bytes:
-    """Create an Excel report with the main data and a separate review worksheet."""
+    """Create an Excel report with review data and a licence lookup area."""
     workbook = Workbook()
     workbook.remove(workbook.active)
     _add_excel_sheet(workbook, "Report_Data", report_records, REPORT_COLUMNS)
+    _add_license_check_columns(workbook["Report_Data"])
     _add_excel_sheet(workbook, "ตรวจสอบข้อมูล", qa_records, QA_COLUMNS)
+
+    workbook.calculation.calcMode = "auto"
+    workbook.calculation.fullCalcOnLoad = True
+    workbook.calculation.forceFullCalc = True
 
     output = BytesIO()
     workbook.save(output)
