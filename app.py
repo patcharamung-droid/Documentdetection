@@ -1,6 +1,6 @@
 import streamlit as st
 
-st.set_page_config(page_title="กสทช. PDF to CSV", page_icon="📶", layout="wide")
+st.set_page_config(page_title="กสทช. PDF to Excel/CSV", page_icon="📶", layout="wide")
 
 try:
     from extractor import (
@@ -16,9 +16,9 @@ except ModuleNotFoundError as error:
     if error.name == "extractor":
         st.error("ไม่พบไฟล์ extractor.py ในโปรเจกต์ที่นำขึ้น Streamlit Cloud")
         st.info("เพิ่มไฟล์ extractor.py ไว้โฟลเดอร์เดียวกับ app.py แล้ว commit และ redeploy อีกครั้ง")
-    elif error.name == "pdfplumber":
-        st.error("ยังไม่ได้ติดตั้งไลบรารี pdfplumber")
-        st.info("ตรวจว่ามี requirements.txt อยู่โฟลเดอร์เดียวกับ app.py และมีบรรทัด pdfplumber>=0.11,<1")
+    elif error.name in {"pdfplumber", "pypdf"}:
+        st.error(f"ยังไม่ได้ติดตั้งไลบรารี {error.name}")
+        st.info("ตรวจว่ามี requirements.txt อยู่โฟลเดอร์เดียวกับ app.py แล้ว commit และ redeploy อีกครั้ง")
     else:
         st.error(f"ไม่พบไลบรารีที่จำเป็น: {error.name}")
     st.stop()
@@ -27,7 +27,7 @@ except ImportError:
     st.info("commit app.py, extractor.py และ requirements.txt เวอร์ชันล่าสุด แล้ว redeploy อีกครั้ง")
     st.stop()
 
-st.title("ระบบตรวจสอบเอกสาร")
+st.title("ระบบสกัดรายงาน กสทช. เป็น Excel หรือ CSV")
 st.write(
     "อัปโหลดรายงาน PDF ได้หลายไฟล์ ระบบจะแยกข้อมูลทีละหน้า "
     "จึงรองรับทั้งรายงาน 1 สถานีต่อไฟล์และหลายสถานีในไฟล์เดียว"
@@ -57,7 +57,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.expander("ข้อมูลที่ระบบตรวจสอบ", expanded=False):
+with st.expander("ข้อมูลที่ระบบสกัด", expanded=False):
     st.write(
         "ผู้ประกอบการ ใบอนุญาต ที่ตั้ง พิกัด รายละเอียดความถี่ "
         "ระดับการแผ่คลื่นแม่เหล็กไฟฟ้าสูงสุด วันที่วัด/คำนวณ ผู้ลงนาม และวันที่รายงาน"
@@ -71,10 +71,30 @@ uploaded_files = st.file_uploader(
 )
 
 output_mode = st.radio(
-    "รูปแบบข้อมูลที่ต้องการ",
+    "รูปแบบข้อมูลที่ต้องการสกัด",
     options=("สรุป 1 แถวต่อสถานี", "ละเอียด 1 แถวต่อความถี่"),
     horizontal=True,
 )
+
+pdf_reading_mode = st.radio(
+    "วิธีอ่าน PDF",
+    options=(
+        "อัตโนมัติ (แนะนำ)",
+        "อ่านตารางด้วย pdfplumber",
+        "อ่านข้อความด้วย pypdf",
+    ),
+    horizontal=True,
+    help=(
+        "อัตโนมัติจะอ่านตารางก่อน และใช้ตัวอ่านข้อความสำรองเฉพาะช่องสำคัญที่ยังว่าง "
+        "เหมาะกับ PDF ที่ใช้ฟอนต์ไทยพิเศษ"
+    ),
+)
+
+parser_modes = {
+    "อัตโนมัติ (แนะนำ)": "auto",
+    "อ่านตารางด้วย pdfplumber": "pdfplumber",
+    "อ่านข้อความด้วย pypdf": "pypdf",
+}
 
 if st.button("เริ่มสกัดข้อมูล", type="primary", disabled=not uploaded_files):
     all_stations = []
@@ -82,7 +102,11 @@ if st.button("เริ่มสกัดข้อมูล", type="primary", di
 
     with st.spinner("กำลังอ่านและจัดรูปแบบรายงาน..."):
         for uploaded_file in uploaded_files:
-            stations, errors = parse_pdf_bytes(uploaded_file.name, uploaded_file.getvalue())
+            stations, errors = parse_pdf_bytes(
+                uploaded_file.name,
+                uploaded_file.getvalue(),
+                parser_mode=parser_modes[pdf_reading_mode],
+            )
             all_stations.extend(stations)
             all_errors.extend(errors)
 
@@ -107,7 +131,10 @@ if st.button("เริ่มสกัดข้อมูล", type="primary", di
         st.dataframe(report_records[:20], use_container_width=True, hide_index=True)
 
         if needs_review:
-            st.warning("บางหน้าอ่านข้อมูลได้ไม่ครบ โปรดตรวจไฟล์ผลตรวจสอบก่อนนำรายงานไปใช้งาน")
+            st.warning(
+                "บางหน้าอ่านข้อมูลได้ไม่ครบ โปรดตรวจรายการที่แจ้งว่าไม่พบข้อมูล "
+                "และวิธีอ่าน PDF ก่อนนำรายงานไปใช้งาน"
+            )
             st.dataframe(
                 [row for row in qa_records if row["สถานะ"] == "ต้องตรวจสอบ"],
                 use_container_width=True,
