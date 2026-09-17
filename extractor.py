@@ -13,6 +13,7 @@ import pdfplumber
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from pypdf import PdfReader
 
 
 REPORT_COLUMNS = [
@@ -43,12 +44,27 @@ REPORT_COLUMNS = [
 QA_COLUMNS = [
     "ไฟล์ต้นทาง",
     "หน้า",
+    "วิธีอ่าน PDF",
     "สถานะ",
     "ข้อมูลที่ไม่พบ",
     "จำนวนความถี่",
     "หมายเหตุ",
 ]
 
+
+# Some Thai PDF fonts omit their ToUnicode mapping.  pdfplumber then exposes
+# the missing marks as ``(cid:...)`` while pypdf exposes Latin characters.
+# These four mappings are the Thai tone marks used by the supplied report.
+_THAI_FONT_MARK_FIXES = {
+    "(cid:201)": "่",
+    "(cid:202)": "้",
+    "(cid:203)": "๊",
+    "(cid:205)": "์",
+    "É": "่",
+    "Ê": "้",
+    "Ë": "๊",
+    "Í": "์",
+}
 
 # pdfplumber can preserve the visual spacing found in some Thai PDF fonts.
 # These replacements are deliberately limited to terms used as field labels.
@@ -64,8 +80,10 @@ _THAI_TYPO_FIXES = {
     "วนั ที่": "วันที่",
     "วันที่วดั": "วันที่วัด",
     "คา นวณ": "คำนวณ",
+    "ค ำนวณ": "คำนวณ",
     "คำ นวณ": "คำนวณ",
     "ผมู้ ีอา นาจ": "ผู้มีอำนาจ",
+    "ผู้มีอ ำนาจ": "ผู้มีอำนาจ",
     "ผมู้ ีอำ นำจ": "ผู้มีอำนาจ",
     "กระทา การ": "กระทำการ",
     "บริษทั": "บริษัท",
@@ -99,8 +117,20 @@ MISSING_FIELD_NAMES = {
     "longitude": "Longitude",
     "latitude": "Latitude",
     "frequencies": "ความถี่",
+    "max_dist_text": "ระยะห่างจากเสา ที่ตั้งสายอากาศ",
     "max_dist_val": "ระยะที่วัด/คำนวณ",
     "max_rad": "ระดับการแผ่คลื่นแม่เหล็กไฟฟ้าสูงสุด",
+    "date_calc": "วันที่วัด/คำนวณ",
+    "signature": "ลงชื่อ",
+    "date_report": "วันที่รายงาน",
+}
+
+FREQUENCY_FIELD_NAMES = {
+    "brand": "ตราอักษร",
+    "model": "รุ่น/แบบ",
+    "power": "กำลังส่ง (วัตต์)",
+    "gain": "อัตราขยายสายอากาศ (dBi)",
+    "height": "ความสูงสายอากาศ (เมตร)",
 }
 
 
@@ -113,6 +143,7 @@ class StationPage:
     data: dict[str, str]
     frequencies: list[dict[str, str]]
     missing_fields: list[str]
+    parser_method: str = "pdfplumber"
     note: str = ""
 
 
@@ -121,8 +152,13 @@ def clean_text(value: object) -> str:
     if value is None:
         return ""
 
-    text = unicodedata.normalize("NFC", str(value))
+    text = str(value)
     text = text.replace("\u00a0", " ").replace("\n", " ")
+    for incorrect, corrected in _THAI_FONT_MARK_FIXES.items():
+        text = text.replace(incorrect, corrected)
+    # Thai Sara Am may be emitted as either of its decomposed visual orders.
+    text = re.sub(r"\u0e4d\s*\u0e32|\u0e32\s*\u0e4d", "\u0e33", text)
+    text = unicodedata.normalize("NFC", text)
     for incorrect, corrected in _THAI_TYPO_FIXES.items():
         text = text.replace(incorrect, corrected)
     return re.sub(r"\s+", " ", text).strip()
@@ -235,6 +271,26 @@ def join_frequency_values(frequencies: Sequence[dict[str, str]], field: str) -> 
     return ", ".join(dict.fromkeys(values))
 
 
+def find_missing_fields(data: dict[str, str], frequencies: Sequence[dict[str, str]]) -> list[str]:
+    """List every required value that was not extracted, including partial rows."""
+    checks = {**data, "frequencies": "yes" if frequencies else ""}
+    missing = [
+        display_name
+        for field, display_name in MISSING_FIELD_NAMES.items()
+        if not checks.get(field, "")
+    ]
+
+    if frequencies:
+        incomplete_columns = [
+            display_name
+            for field, display_name in FREQUENCY_FIELD_NAMES.items()
+            if any(not frequency.get(field, "") for frequency in frequencies)
+        ]
+        if incomplete_columns:
+            missing.append(f"รายละเอียดความถี่: {', '.join(incomplete_columns)}")
+    return missing
+
+
 def parse_page(page: pdfplumber.page.Page, source_file: str, page_number: int) -> StationPage:
     rows = clean_rows(page.extract_tables())
     data = {field: value_after_label(rows, aliases) for field, aliases in LABELS.items()}
@@ -252,25 +308,261 @@ def parse_page(page: pdfplumber.page.Page, source_file: str, page_number: int) -
     if not rows:
         note = "ไม่พบตารางข้อมูลที่อ่านได้ในหน้านี้"
 
-    checks = {**data, "frequencies": "yes" if frequencies else ""}
-    missing_fields = [
-        display_name
-        for field, display_name in MISSING_FIELD_NAMES.items()
-        if not checks.get(field, "")
-    ]
-    return StationPage(source_file, page_number, data, frequencies, missing_fields, note)
+    missing_fields = find_missing_fields(data, frequencies)
+    return StationPage(
+        source_file,
+        page_number,
+        data,
+        frequencies,
+        missing_fields,
+        parser_method="pdfplumber",
+        note=note,
+    )
 
 
-def parse_pdf_bytes(source_file: str, source_bytes: bytes) -> tuple[list[StationPage], list[str]]:
-    """Parse each report page independently so multi-station PDFs remain separated."""
+def _pypdf_layout_lines(page: object) -> list[str]:
+    """Read one page with pypdf's layout extractor, with a version fallback."""
+    try:
+        text = page.extract_text(extraction_mode="layout") or ""
+    except TypeError:
+        text = page.extract_text() or ""
+    return [clean_text(line) for line in text.splitlines() if clean_text(line)]
+
+
+def _pypdf_value_after_label(lines: Sequence[str], aliases: Sequence[str]) -> str:
+    """Find a field value on the same visual line, then try the next line."""
+    for line_number, line in enumerate(lines):
+        compact_line = re.sub(r"\s*/\s*", "/", line)
+        for alias in aliases:
+            compact_alias = re.sub(r"\s*/\s*", "/", clean_text(alias))
+            position = compact_line.find(compact_alias)
+            if position >= 0:
+                value = compact_line[position + len(compact_alias) :].strip(" :")
+                if value:
+                    return value
+
+        # A colon is useful for labels that pypdf split into visual glyph runs.
+        if matches_label(line, aliases) and ":" in line:
+            value = line.split(":", maxsplit=1)[1].strip()
+            if value:
+                return value
+        if matches_label(line, aliases) and line_number + 1 < len(lines):
+            return lines[line_number + 1].strip(" :")
+    return ""
+
+
+def _trim_before_next_label(value: str, following_labels: Sequence[str]) -> str:
+    """Keep the value before a following field label on the same visual line."""
+    positions = [value.find(label) for label in following_labels if value.find(label) >= 0]
+    return value[: min(positions)].strip(" :") if positions else value.strip(" :")
+
+
+def _extract_pypdf_coordinates(lines: Sequence[str]) -> tuple[str, str]:
+    """Extract longitude and latitude together, as the layout reader keeps them joined."""
+    coordinate_pattern = r"\d{1,3}(?:\.\d+)?\s*°\s*\d{1,2}'\s*\d{1,2}\""
+    for line in lines:
+        if "longitude" not in line.lower() and "longtitude" not in line.lower():
+            continue
+        coordinates = re.findall(coordinate_pattern, line)
+        if len(coordinates) >= 2:
+            return coordinates[0], coordinates[1]
+    return "", ""
+
+
+def _extract_pypdf_frequency_rows(lines: Sequence[str]) -> list[dict[str, str]]:
+    """Recover equipment details when pypdf compresses visual table columns."""
+    frequencies: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+
+    for line_number, line in enumerate(lines):
+        # A true equipment row starts with the frequency.  This prevents the
+        # distance-summary rows (5 m to 50 m, etc.) from becoming frequencies.
+        match = re.match(
+            r"^\s*(\d{2,5}(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+"
+            r"(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)(.*)$",
+            line,
+        )
+        if not match or not is_frequency(match.group(1)):
+            continue
+        frequency, power, gain, height, equipment = match.groups()
+        brand = ""
+        model = ""
+
+        # pypdf can join the final numeric column to the next two columns,
+        # for example: "9.5ERICSSONRadio 4432 B28 (KRC 161".
+        equipment_match = re.match(r"([A-Z][A-Z0-9 .&-]*?)([A-Z][a-z].*)$", equipment)
+        if equipment_match:
+            brand = equipment_match.group(1).strip()
+            model = equipment_match.group(2).strip()
+            if line_number + 1 < len(lines):
+                continuation = lines[line_number + 1]
+                if continuation and not continuation.startswith("ผลรวม"):
+                    model = f"{model} {continuation}".strip()
+
+        key = (frequency, power, gain, height)
+        if key in seen:
+            continue
+        seen.add(key)
+        frequencies.append(
+            {
+                "frequency": frequency,
+                "brand": brand,
+                "model": model,
+                "power": power,
+                "gain": gain,
+                "height": height,
+            }
+        )
+    return frequencies
+
+
+def _clean_pypdf_location(value: str) -> str:
+    """Remove the empty หมู่ที่ cell that pypdf places before a location value."""
+    if value.startswith("หมู่ที่"):
+        return value.removeprefix("หมู่ที่").strip(" :")
+    return value
+
+
+def _extract_pypdf_maximum(lines: Sequence[str]) -> tuple[str, str, str]:
+    label = "ระดับการแผ่คลื่นแม่เหล็กไฟฟ้าสูงสุด"
+    candidates: list[tuple[str, str]] = []
+    for line in lines:
+        if not matches_label(line, (label,)):
+            continue
+        numbers = re.findall(r"\d+(?:\.\d+)?%?", line)
+        if len(numbers) >= 2:
+            candidates.append((numbers[-2], numbers[-1]))
+    if candidates:
+        distance, radiation = candidates[-1]
+        return "ระดับสูงสุด", distance, radiation
+    return "", "", ""
+
+
+def parse_pypdf_page(page: object, source_file: str, page_number: int) -> StationPage:
+    """Extract a report page as text for PDFs whose table font map is incomplete."""
+    lines = _pypdf_layout_lines(page)
+    data = {
+        field: _pypdf_value_after_label(lines, aliases)
+        for field, aliases in LABELS.items()
+    }
+    data["location"] = _clean_pypdf_location(data["location"])
+    data["subdistrict"] = _trim_before_next_label(
+        data["subdistrict"], ("อำเภอ", "จังหวัด", "รหัสไปรษณีย์")
+    )
+    data["district"] = _trim_before_next_label(
+        data["district"], ("จังหวัด", "รหัสไปรษณีย์")
+    )
+    data["province"] = _trim_before_next_label(data["province"], ("รหัสไปรษณีย์",))
+    longitude, latitude = _extract_pypdf_coordinates(lines)
+    data["longitude"] = longitude
+    data["latitude"] = latitude
+    max_text, max_distance, max_radiation = _extract_pypdf_maximum(lines)
+    data.update(
+        {
+            "max_dist_text": max_text,
+            "max_dist_val": max_distance,
+            "max_rad": max_radiation,
+        }
+    )
+    frequencies = _extract_pypdf_frequency_rows(lines)
+    note = ""
+    if not lines:
+        note = "ไม่พบข้อความที่อ่านได้ในหน้านี้"
+    elif frequencies and any(not row["brand"] or not row["model"] for row in frequencies):
+        note = "อ่านตารางความถี่แบบข้อความ: โปรดตรวจสอบตราอักษรและรุ่น/แบบ"
+
+    return StationPage(
+        source_file,
+        page_number,
+        data,
+        frequencies,
+        find_missing_fields(data, frequencies),
+        parser_method="pypdf",
+        note=note,
+    )
+
+
+def _should_try_text_fallback(station: StationPage) -> bool:
+    """Use pypdf only where the table reader has something important missing."""
+    return any(
+        not station.data.get(field, "")
+        for field in (
+            "license",
+            "location",
+            "max_dist_text",
+            "max_dist_val",
+            "max_rad",
+            "date_calc",
+            "date_report",
+        )
+    )
+
+
+def merge_station_pages(table_station: StationPage, text_station: StationPage) -> StationPage:
+    """Fill only blank table-reader fields; never replace already extracted values."""
+    data = table_station.data.copy()
+    recovered_fields: list[str] = []
+    for field, value in text_station.data.items():
+        if not data.get(field, "") and value:
+            data[field] = value
+            recovered_fields.append(field)
+
+    frequencies = table_station.frequencies or text_station.frequencies
+    notes = [note for note in (table_station.note, text_station.note) if note]
+    if recovered_fields:
+        display_names = {
+            key: MISSING_FIELD_NAMES.get(key, key) for key in recovered_fields
+        }
+        notes.append(f"ใช้ pypdf เติมข้อมูล: {', '.join(display_names[key] for key in recovered_fields)}")
+
+    return StationPage(
+        table_station.source_file,
+        table_station.page_number,
+        data,
+        frequencies,
+        find_missing_fields(data, frequencies),
+        parser_method="pdfplumber + pypdf" if recovered_fields else "pdfplumber",
+        note=" | ".join(dict.fromkeys(notes)),
+    )
+
+
+def parse_pdf_bytes(
+    source_file: str, source_bytes: bytes, parser_mode: str = "auto"
+) -> tuple[list[StationPage], list[str]]:
+    """Parse report pages with tables, text, or an automatic text fallback."""
+    if parser_mode not in {"auto", "pdfplumber", "pypdf"}:
+        raise ValueError("parser_mode ต้องเป็น auto, pdfplumber หรือ pypdf")
+
     stations: list[StationPage] = []
     errors: list[str] = []
 
+    if parser_mode == "pypdf":
+        try:
+            reader = PdfReader(BytesIO(source_bytes))
+            for page_number, page in enumerate(reader.pages, start=1):
+                try:
+                    station = parse_pypdf_page(page, source_file, page_number)
+                    if any(station.data.values()) or station.frequencies:
+                        stations.append(station)
+                    else:
+                        errors.append(f"{source_file} หน้า {page_number}: ไม่พบข้อมูลสถานี")
+                except Exception as error:
+                    errors.append(f"{source_file} หน้า {page_number}: {error}")
+        except Exception as error:
+            errors.append(f"เปิดไฟล์ {source_file} ไม่สำเร็จ: {error}")
+        return stations, errors
+
     try:
+        text_reader = PdfReader(BytesIO(source_bytes)) if parser_mode == "auto" else None
         with pdfplumber.open(BytesIO(source_bytes)) as pdf:
             for page_number, page in enumerate(pdf.pages, start=1):
                 try:
                     station = parse_page(page, source_file, page_number)
+                    if parser_mode == "auto" and _should_try_text_fallback(station):
+                        text_station = parse_pypdf_page(
+                            text_reader.pages[page_number - 1], source_file, page_number
+                        )
+                        station = merge_station_pages(station, text_station)
                     if any(station.data.values()) or station.frequencies:
                         stations.append(station)
                     else:
@@ -350,6 +642,7 @@ def build_qa_records(stations: Sequence[StationPage]) -> list[dict[str, str]]:
             {
                 "ไฟล์ต้นทาง": station.source_file,
                 "หน้า": station.page_number,
+                "วิธีอ่าน PDF": station.parser_method,
                 "สถานะ": status,
                 "ข้อมูลที่ไม่พบ": ", ".join(station.missing_fields),
                 "จำนวนความถี่": len(station.frequencies),
