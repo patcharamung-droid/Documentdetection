@@ -151,7 +151,7 @@ if st.button("เริ่มสกัดข้อมูล", type="primary", di
         with download_excel:
             st.markdown('<div class="download-heading">Excel (.xlsx)</div>', unsafe_allow_html=True)
             st.markdown(
-                '<div class="download-detail">เหมาะสำหรับเปิด ตรวจสอบ กรอง และจัดรูปแบบต่อใน Excel<br>มีแผ่นงานรายงานหลักและผลตรวจสอบ</div>',
+                '<div class="download-detail">เหมาะสำหรับเปิด ตรวจสอบ กรอง และจัดรูปแบบต่อใน Excel<br>วางเลขใบอนุญาตในคอลัมน์ W เพื่อดูผลในคอลัมน์ X</div>',
                 unsafe_allow_html=True,
             )
             st.download_button(
