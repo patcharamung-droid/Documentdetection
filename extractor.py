@@ -15,6 +15,15 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from pypdf import PdfReader
 
+try:
+    from PIL import ImageOps
+    import pypdfium2 as pdfium
+    import pytesseract
+except ImportError:
+    ImageOps = None
+    pdfium = None
+    pytesseract = None
+
 
 REPORT_COLUMNS = [
     "ลำดับที่",
@@ -50,6 +59,44 @@ QA_COLUMNS = [
     "จำนวนความถี่",
     "หมายเหตุ",
 ]
+
+PAGE_DATA_COLUMNS = [
+    "ไฟล์ต้นทาง",
+    "หน้าต้นทาง",
+    "หน้าที่พบ",
+    "ผู้ประกอบการ",
+    "ที่ตั้ง",
+    "พิกัด",
+    "ค่าแผ่คลื่นสูงสุด",
+    "ชื่อ",
+    "ตำแหน่ง",
+    "วันที่",
+    "วันที่ประกาศ",
+    "ชนิดโครงสร้างเสาส่งสัญญาณโทรคมนาคม",
+    "ลำดับ",
+    "หมู่",
+    "สถานะ",
+    "ข้อมูลที่ไม่พบ",
+]
+
+MAIN_REPORT_PAGE_TYPE = "แบบรายงานระดับการแผ่คลื่นแม่เหล็กไฟฟ้า ของสถานีวิทยุคมนาคม"
+PAGE_TYPE_REQUIREMENTS = {
+    MAIN_REPORT_PAGE_TYPE: ("ผู้ประกอบการ", "ที่ตั้ง", "พิกัด", "ค่าแผ่คลื่นสูงสุด", "ชื่อ", "วันที่"),
+    "หลักฐานการทำความเข้าใจ": ("ที่ตั้ง", "วันที่ประกาศ"),
+    "ข้อมูลทำความเข้าใจเกี่ยวกับการติดตั้งสถานีวิทยุ-ส่งสัญญาณโทรศัพท์เคลื่อนที่": (
+        "ที่ตั้ง",
+        "ชนิดโครงสร้างเสาส่งสัญญาณโทรคมนาคม",
+        "วันที่",
+    ),
+    "รูปถ่ายการแจกเอกสาร": ("ชื่อ", "ที่ตั้ง"),
+    "บันทึกการประชุม": ("ชื่อ", "ที่ตั้ง", "ตำแหน่ง"),
+    "เอกสารลงทะเบียนประชุม": ("ลำดับ", "หมู่"),
+    "ภาพถ่ายการประชุม": ("วันที่",),
+    "เขียนที่": ("ที่ตั้ง", "ชื่อ"),
+}
+
+OCR_DPI = 300
+OCR_LANGUAGE = "tha+eng"
 
 
 # Some Thai PDF fonts omit their ToUnicode mapping.  pdfplumber then exposes
@@ -147,6 +194,19 @@ class StationPage:
     note: str = ""
 
 
+@dataclass
+class PageDataRecord:
+    """One data record requested for a recognised page type in the document."""
+
+    source_file: str
+    page_number: int
+    page_type: str
+    data: dict[str, str]
+    required_fields: Sequence[str]
+    parser_method: str = "pypdf"
+    note: str = ""
+
+
 def clean_text(value: object) -> str:
     """Return a readable, single-line value without changing factual content."""
     if value is None:
@@ -181,6 +241,20 @@ def matches_label(value: object, aliases: Sequence[str]) -> bool:
 def is_same_label(value: object, aliases: Sequence[str]) -> bool:
     key = label_key(value)
     return bool(key) and any(key == label_key(alias) for alias in aliases)
+
+
+def _contains_label(text: object, aliases: Sequence[str]) -> bool:
+    """Check whether a block of text contains one of the supplied headings."""
+    key = label_key(text)
+    return bool(key) and any(label_key(alias) in key for alias in aliases)
+
+
+def _normalise_license(value: str) -> str:
+    """Keep only genuine licence values, never the next empty-table label."""
+    value = clean_text(value)
+    if _contains_label(value, (*LABELS["location"], *LABELS["subdistrict"], *LABELS["district"])):
+        return ""
+    return value if re.search(r"\d{4,}", value) else ""
 
 
 def clean_rows(tables: Iterable[Sequence[Sequence[object]]]) -> list[list[str]]:
@@ -294,6 +368,7 @@ def find_missing_fields(data: dict[str, str], frequencies: Sequence[dict[str, st
 def parse_page(page: pdfplumber.page.Page, source_file: str, page_number: int) -> StationPage:
     rows = clean_rows(page.extract_tables())
     data = {field: value_after_label(rows, aliases) for field, aliases in LABELS.items()}
+    data["license"] = _normalise_license(data["license"])
     max_text, max_distance, max_radiation = extract_maximum(rows)
     data.update(
         {
@@ -359,11 +434,18 @@ def _trim_before_next_label(value: str, following_labels: Sequence[str]) -> str:
 
 def _extract_pypdf_coordinates(lines: Sequence[str]) -> tuple[str, str]:
     """Extract longitude and latitude together, as the layout reader keeps them joined."""
-    coordinate_pattern = r"\d{1,3}(?:\.\d+)?\s*°\s*\d{1,2}'\s*\d{1,2}\""
+    coordinate_patterns = (
+        r"\d{1,3}(?:\.\d+)?\s*°\s*\d{1,2}'\s*\d{1,2}\"",
+        r"\b\d{1,3}\s+\d{1,2}\s+\d{1,2}\b",
+    )
     for line in lines:
         if "longitude" not in line.lower() and "longtitude" not in line.lower():
             continue
-        coordinates = re.findall(coordinate_pattern, line)
+        coordinates: list[str] = []
+        for pattern in coordinate_patterns:
+            coordinates = re.findall(pattern, line)
+            if len(coordinates) >= 2:
+                break
         if len(coordinates) >= 2:
             return coordinates[0], coordinates[1]
     return "", ""
@@ -438,13 +520,15 @@ def _extract_pypdf_maximum(lines: Sequence[str]) -> tuple[str, str, str]:
     return "", "", ""
 
 
-def parse_pypdf_page(page: object, source_file: str, page_number: int) -> StationPage:
-    """Extract a report page as text for PDFs whose table font map is incomplete."""
-    lines = _pypdf_layout_lines(page)
+def parse_text_lines(
+    lines: Sequence[str], source_file: str, page_number: int, parser_method: str = "pypdf"
+) -> StationPage:
+    """Extract a report page from text lines supplied by a PDF reader or OCR."""
     data = {
         field: _pypdf_value_after_label(lines, aliases)
         for field, aliases in LABELS.items()
     }
+    data["license"] = _normalise_license(data["license"])
     data["location"] = _clean_pypdf_location(data["location"])
     data["subdistrict"] = _trim_before_next_label(
         data["subdistrict"], ("อำเภอ", "จังหวัด", "รหัสไปรษณีย์")
@@ -477,9 +561,104 @@ def parse_pypdf_page(page: object, source_file: str, page_number: int) -> Statio
         data,
         frequencies,
         find_missing_fields(data, frequencies),
-        parser_method="pypdf",
+        parser_method=parser_method,
         note=note,
     )
+
+
+def parse_pypdf_page(page: object, source_file: str, page_number: int) -> StationPage:
+    """Extract a report page as text for PDFs whose table font map is incomplete."""
+    return parse_text_lines(_pypdf_layout_lines(page), source_file, page_number, "pypdf")
+
+
+def _ocr_page_lines(source_bytes: bytes, page_number: int) -> list[str]:
+    """Render one PDF page and read Thai and English text with Tesseract OCR."""
+    if not all((pytesseract, pdfium, ImageOps)):
+        raise RuntimeError(
+            "ไม่พบไลบรารี OCR: ติดตั้ง pytesseract, pypdfium2 และ Pillow แล้ว redeploy"
+        )
+
+    document = page = bitmap = None
+    try:
+        document = pdfium.PdfDocument(source_bytes)
+        page = document[page_number - 1]
+        bitmap = page.render(scale=OCR_DPI / 72)
+        image = ImageOps.autocontrast(ImageOps.grayscale(bitmap.to_pil()))
+        text = pytesseract.image_to_string(
+            image,
+            lang=OCR_LANGUAGE,
+            config="--oem 1 --psm 6",
+        )
+    except pytesseract.TesseractNotFoundError as error:
+        raise RuntimeError(
+            "ไม่พบโปรแกรม Tesseract OCR: ติดตั้ง tesseract-ocr และชุดภาษาไทย (tha)"
+        ) from error
+    except pytesseract.TesseractError as error:
+        raise RuntimeError(
+            "OCR อ่านภาษาไทยไม่ได้: ตรวจการติดตั้งชุดภาษา tha และ eng ของ Tesseract"
+        ) from error
+    finally:
+        for resource in (bitmap, page, document):
+            close = getattr(resource, "close", None)
+            if close:
+                close()
+
+    return [clean_text(line) for line in text.splitlines() if clean_text(line)]
+
+
+def _append_records_from_text_lines(
+    stations: list[StationPage],
+    page_data_records: list[PageDataRecord],
+    lines: Sequence[str],
+    source_file: str,
+    page_number: int,
+    parser_method: str,
+) -> bool:
+    """Append the requested records for a recognised page and report whether it matched."""
+    if _page_type(lines) != MAIN_REPORT_PAGE_TYPE:
+        page_data_records.extend(
+            extract_page_data_records(lines, source_file, page_number, parser_method=parser_method)
+        )
+        return bool(_page_type(lines))
+
+    station = parse_text_lines(lines, source_file, page_number, parser_method)
+    if any(station.data.values()) or station.frequencies:
+        stations.append(station)
+        page_data_records.extend(
+            extract_page_data_records(lines, source_file, page_number, station, station.parser_method)
+        )
+        return True
+    return False
+
+
+def _parse_ocr_document(
+    source_file: str, source_bytes: bytes
+) -> tuple[list[StationPage], list[PageDataRecord], list[str]]:
+    """Use OCR on every page when the user explicitly selects OCR mode."""
+    stations: list[StationPage] = []
+    page_data_records: list[PageDataRecord] = []
+    errors: list[str] = []
+    try:
+        reader = PdfReader(BytesIO(source_bytes))
+        for page_number in range(1, len(reader.pages) + 1):
+            try:
+                lines = _ocr_page_lines(source_bytes, page_number)
+                if not _append_records_from_text_lines(
+                    stations,
+                    page_data_records,
+                    lines,
+                    source_file,
+                    page_number,
+                    "OCR (Tesseract)",
+                ) and lines:
+                    errors.append(
+                        f"{source_file} หน้า {page_number}: OCR อ่านได้ แต่ไม่พบหัวข้อหน้าที่กำหนด"
+                    )
+            except Exception as error:
+                errors.append(f"{source_file} หน้า {page_number}: OCR ไม่สำเร็จ - {error}")
+    except Exception as error:
+        errors.append(f"เปิดไฟล์ {source_file} ไม่สำเร็จ: {error}")
+    return stations, page_data_records, errors
 
 
 def _should_try_text_fallback(station: StationPage) -> bool:
@@ -526,14 +705,302 @@ def merge_station_pages(table_station: StationPage, text_station: StationPage) -
     )
 
 
-def parse_pdf_bytes(
+_THAI_MONTH_PATTERN = (
+    r"(?:มกราคม|กุมภาพันธ์|มีนาคม|เมษายน|พฤษภาคม|มิถุนายน|กรกฎาคม|"
+    r"สิงหาคม|กันยายน|ตุลาคม|พฤศจิกายน|ธันวาคม)"
+)
+_THAI_DATE_PATTERN = re.compile(rf"\b\d{{1,2}}\s+{_THAI_MONTH_PATTERN}\s+25\d{{2}}\b")
+_PERSON_PREFIX = r"(?:นาย|นางสาว|นาง|ด\.ช\.|ด\.ญ\.)"
+_PERSON_PATTERN = re.compile(rf"^{_PERSON_PREFIX}\s*[ก-๙][ก-๙\s.'-]{{1,80}}$")
+_PERSON_VALUE_PATTERN = re.compile(
+    rf"{_PERSON_PREFIX}\s*[ก-๙][ก-๙\s.'-]*?(?=\s+{_PERSON_PREFIX}(?=[ก-๙])|$)"
+)
+_ADDRESS_TERMS = ("เลขที่", "หมู่ที่", "ตำบล", "อำเภอ", "จังหวัด", "ถนน", "ซอย")
+
+
+def _first_thai_date(lines: Sequence[str]) -> str:
+    for line in lines:
+        match = _THAI_DATE_PATTERN.search(line)
+        if match:
+            return match.group(0)
+    return ""
+
+
+def _date_after_label(lines: Sequence[str], aliases: Sequence[str]) -> str:
+    for index, line in enumerate(lines):
+        if not matches_label(line, aliases):
+            continue
+        date = _first_thai_date([line, *lines[index + 1 : index + 3]])
+        if date:
+            return date
+    return ""
+
+
+def _page_location(lines: Sequence[str]) -> str:
+    location = _pypdf_value_after_label(
+        lines, ("สถานที่ตั้ง", "สถานที่ติดตั้ง", "ที่ตั้ง")
+    )
+    return _trim_before_next_label(
+        location,
+        ("ตำบล", "อำเภอ", "จังหวัด", "รหัสไปรษณีย์", "ชนิดโครงสร้าง"),
+    )
+
+
+def _person_name(lines: Sequence[str]) -> str:
+    for line in lines:
+        if "ชื่อสถานี" in label_key(line):
+            continue
+        names = _person_values(line)
+        if names:
+            return names[0]
+
+    name = _pypdf_value_after_label(
+        lines, ("ชื่อผู้เข้าร่วมประชุม", "ชื่อ-นามสกุล", "ชื่อ", "ผู้มีอำนาจลงนาม")
+    )
+    return "" if "สถานี" in name else name
+
+
+def _person_values(line: str) -> list[str]:
+    return [clean_text(match.group(0)) for match in _PERSON_VALUE_PATTERN.finditer(line)]
+
+
+def _split_repeated_address(value: str, marker: str, expected_parts: int) -> list[str]:
+    positions = [match.start() for match in re.finditer(re.escape(marker), value)]
+    if len(positions) != expected_parts:
+        return [value] * expected_parts
+    return [value[start:end].strip() for start, end in zip(positions, [*positions[1:], len(value)])]
+
+
+def _people_with_locations(lines: Sequence[str]) -> list[dict[str, str]]:
+    """Return one record per named recipient in a handout-photo page."""
+    people: list[dict[str, str]] = []
+    for index, line in enumerate(lines):
+        names = _person_values(line)
+        if not names:
+            continue
+        address_groups: list[list[str]] = [[] for _ in names]
+        for candidate in lines[index + 1 : index + 5]:
+            if _person_values(candidate):
+                break
+            if any(term in candidate for term in _ADDRESS_TERMS):
+                marker = "เลขที่" if candidate.count("เลขที่") > 1 else "ตำบล"
+                parts = _split_repeated_address(candidate, marker, len(names))
+                for name_index, part in enumerate(parts):
+                    address_groups[name_index].append(part)
+        people.extend(
+            {"ชื่อ": name, "ที่ตั้ง": " ".join(address_groups[name_index])}
+            for name_index, name in enumerate(names)
+        )
+    return people
+
+
+def _registration_rows(lines: Sequence[str]) -> list[dict[str, str]]:
+    """Read explicit sequence-and-village pairs where a registration table exposes them."""
+    rows: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for line in lines:
+        match = re.search(r"(?:^|\s)(\d{1,3})\s+.*?หมู่ที่\s*(\d{1,2})(?:\s|$)", line)
+        if not match:
+            continue
+        values = (match.group(1), match.group(2))
+        if values not in seen:
+            seen.add(values)
+            rows.append({"ลำดับ": values[0], "หมู่": values[1]})
+    return rows
+
+
+def _page_type(lines: Sequence[str]) -> str:
+    text = " ".join(lines)
+    if _contains_label(text, ("แบบรายงานระดับการแผ่คลื่นแม่เหล็กไฟฟ้า",)):
+        return MAIN_REPORT_PAGE_TYPE
+    if _contains_label(text, ("หลักฐานการทำความเข้าใจ",)):
+        return "หลักฐานการทำความเข้าใจ"
+    if _contains_label(text, ("รูปถ่ายการแจกเอกสาร",)):
+        return "รูปถ่ายการแจกเอกสาร"
+    if _contains_label(text, ("ภาพถ่ายการประชุม",)):
+        return "ภาพถ่ายการประชุม"
+    if _contains_label(text, ("เอกสารลงทะเบียนประชุม", "ลงทะเบียนเข้าร่วมประชุม")):
+        return "เอกสารลงทะเบียนประชุม"
+    if _contains_label(text, ("บันทึกการประชุม",)):
+        return "บันทึกการประชุม"
+    if _contains_label(text, ("เขียนที่",)):
+        return "เขียนที่"
+    if _contains_label(
+        text,
+        (
+            "ข้อมูลทำความเข้าใจเกี่ยวกับการติดตั้งสถานีวิทยุ",
+            "เอกสารเผยแพร่ทำความเข้าใจกับประชาชน",
+            "การติดตั้งสถานีฐานโทรศัพท์เคลื่อนที่",
+        ),
+    ):
+        return "ข้อมูลทำความเข้าใจเกี่ยวกับการติดตั้งสถานีวิทยุ-ส่งสัญญาณโทรศัพท์เคลื่อนที่"
+    return ""
+
+
+def _new_page_record(
+    source_file: str,
+    page_number: int,
+    page_type: str,
+    data: dict[str, str],
+    parser_method: str,
+    note: str = "",
+) -> PageDataRecord:
+    return PageDataRecord(
+        source_file=source_file,
+        page_number=page_number,
+        page_type=page_type,
+        data=data,
+        required_fields=PAGE_TYPE_REQUIREMENTS[page_type],
+        parser_method=parser_method,
+        note=note,
+    )
+
+
+def extract_page_data_records(
+    lines: Sequence[str],
+    source_file: str,
+    page_number: int,
+    station: StationPage | None = None,
+    parser_method: str = "pypdf",
+) -> list[PageDataRecord]:
+    """Extract only the user-selected fields for each recognised document page."""
+    page_type = _page_type(lines)
+    if not page_type:
+        return []
+
+    if page_type == MAIN_REPORT_PAGE_TYPE and station:
+        data = station.data
+        coordinates = ", ".join(
+            value for value in (data.get("longitude", ""), data.get("latitude", "")) if value
+        )
+        return [
+            _new_page_record(
+                source_file,
+                page_number,
+                page_type,
+                {
+                    "ผู้ประกอบการ": data.get("operator", ""),
+                    "ที่ตั้ง": data.get("location", ""),
+                    "พิกัด": coordinates,
+                    "ค่าแผ่คลื่นสูงสุด": data.get("max_rad", ""),
+                    "ชื่อ": data.get("signature", ""),
+                    "วันที่": data.get("date_report", "") or data.get("date_calc", ""),
+                },
+                station.parser_method,
+                station.note,
+            )
+        ]
+
+    if page_type == "หลักฐานการทำความเข้าใจ":
+        return [
+            _new_page_record(
+                source_file,
+                page_number,
+                page_type,
+                {
+                    "ที่ตั้ง": _page_location(lines),
+                    "วันที่ประกาศ": _date_after_label(lines, ("วันที่ประกาศ",)),
+                },
+                parser_method,
+            )
+        ]
+
+    if page_type == "ข้อมูลทำความเข้าใจเกี่ยวกับการติดตั้งสถานีวิทยุ-ส่งสัญญาณโทรศัพท์เคลื่อนที่":
+        return [
+            _new_page_record(
+                source_file,
+                page_number,
+                page_type,
+                {
+                    "ที่ตั้ง": _page_location(lines),
+                    "ชนิดโครงสร้างเสาส่งสัญญาณโทรคมนาคม": _pypdf_value_after_label(
+                        lines,
+                        (
+                            "ชนิดโครงสร้างเสาส่งสัญญาณโทรคมนาคม",
+                            "ชนิดโครงสร้างเสาส่งสัญญาณ",
+                            "ชนิดโครงสร้าง",
+                        ),
+                    ),
+                    "วันที่": _first_thai_date(lines),
+                },
+                parser_method,
+            )
+        ]
+
+    if page_type == "รูปถ่ายการแจกเอกสาร":
+        people = _people_with_locations(lines)
+        if people:
+            return [
+                _new_page_record(source_file, page_number, page_type, person, parser_method)
+                for person in people
+            ]
+        return [_new_page_record(source_file, page_number, page_type, {}, parser_method)]
+
+    if page_type == "บันทึกการประชุม":
+        return [
+            _new_page_record(
+                source_file,
+                page_number,
+                page_type,
+                {
+                    "ชื่อ": _person_name(lines),
+                    "ที่ตั้ง": _page_location(lines),
+                    "ตำแหน่ง": _pypdf_value_after_label(lines, ("ตำแหน่ง",)),
+                },
+                parser_method,
+            )
+        ]
+
+    if page_type == "เอกสารลงทะเบียนประชุม":
+        rows = _registration_rows(lines)
+        if rows:
+            return [
+                _new_page_record(source_file, page_number, page_type, row, parser_method)
+                for row in rows
+            ]
+        return [
+            _new_page_record(
+                source_file,
+                page_number,
+                page_type,
+                {
+                    "ลำดับ": _pypdf_value_after_label(lines, ("ลำดับ",)),
+                    "หมู่": _pypdf_value_after_label(lines, ("หมู่", "หมู่ที่")),
+                },
+                parser_method,
+            )
+        ]
+
+    if page_type == "ภาพถ่ายการประชุม":
+        return [
+            _new_page_record(
+                source_file, page_number, page_type, {"วันที่": _first_thai_date(lines)}, parser_method
+            )
+        ]
+
+    return [
+        _new_page_record(
+            source_file,
+            page_number,
+            page_type,
+            {"ที่ตั้ง": _page_location(lines), "ชื่อ": _person_name(lines)},
+            parser_method,
+        )
+    ]
+
+
+def parse_document_bytes(
     source_file: str, source_bytes: bytes, parser_mode: str = "auto"
-) -> tuple[list[StationPage], list[str]]:
-    """Parse report pages with tables, text, or an automatic text fallback."""
-    if parser_mode not in {"auto", "pdfplumber", "pypdf"}:
-        raise ValueError("parser_mode ต้องเป็น auto, pdfplumber หรือ pypdf")
+) -> tuple[list[StationPage], list[PageDataRecord], list[str]]:
+    """Parse selected data from main-report and recognised supporting-document pages."""
+    if parser_mode not in {"auto", "pdfplumber", "pypdf", "ocr"}:
+        raise ValueError("parser_mode ต้องเป็น auto, pdfplumber, pypdf หรือ ocr")
+
+    if parser_mode == "ocr":
+        return _parse_ocr_document(source_file, source_bytes)
 
     stations: list[StationPage] = []
+    page_data_records: list[PageDataRecord] = []
     errors: list[str] = []
 
     if parser_mode == "pypdf":
@@ -541,36 +1008,78 @@ def parse_pdf_bytes(
             reader = PdfReader(BytesIO(source_bytes))
             for page_number, page in enumerate(reader.pages, start=1):
                 try:
-                    station = parse_pypdf_page(page, source_file, page_number)
-                    if any(station.data.values()) or station.frequencies:
-                        stations.append(station)
-                    else:
+                    lines = _pypdf_layout_lines(page)
+                    if not _append_records_from_text_lines(
+                        stations,
+                        page_data_records,
+                        lines,
+                        source_file,
+                        page_number,
+                        "pypdf",
+                    ) and _page_type(lines) == MAIN_REPORT_PAGE_TYPE:
                         errors.append(f"{source_file} หน้า {page_number}: ไม่พบข้อมูลสถานี")
                 except Exception as error:
                     errors.append(f"{source_file} หน้า {page_number}: {error}")
         except Exception as error:
             errors.append(f"เปิดไฟล์ {source_file} ไม่สำเร็จ: {error}")
-        return stations, errors
+        return stations, page_data_records, errors
 
     try:
-        text_reader = PdfReader(BytesIO(source_bytes)) if parser_mode == "auto" else None
+        text_reader = PdfReader(BytesIO(source_bytes))
         with pdfplumber.open(BytesIO(source_bytes)) as pdf:
             for page_number, page in enumerate(pdf.pages, start=1):
                 try:
-                    station = parse_page(page, source_file, page_number)
-                    if parser_mode == "auto" and _should_try_text_fallback(station):
+                    lines = _pypdf_layout_lines(text_reader.pages[page_number - 1])
+                    ocr_used = False
+                    if parser_mode == "auto" and not lines:
+                        try:
+                            lines = _ocr_page_lines(source_bytes, page_number)
+                            ocr_used = True
+                        except RuntimeError:
+                            # Keep the established text-PDF workflow unchanged when OCR
+                            # is not installed locally or a blank supporting page has no text.
+                            continue
+                    if _page_type(lines) != MAIN_REPORT_PAGE_TYPE:
+                        page_data_records.extend(
+                            extract_page_data_records(
+                                lines,
+                                source_file,
+                                page_number,
+                                parser_method="OCR (Tesseract)" if ocr_used else "pypdf",
+                            )
+                        )
+                        continue
+                    station = (
+                        parse_text_lines(lines, source_file, page_number, "OCR (Tesseract)")
+                        if ocr_used
+                        else parse_page(page, source_file, page_number)
+                    )
+                    if not ocr_used and parser_mode == "auto" and _should_try_text_fallback(station):
                         text_station = parse_pypdf_page(
                             text_reader.pages[page_number - 1], source_file, page_number
                         )
                         station = merge_station_pages(station, text_station)
                     if any(station.data.values()) or station.frequencies:
                         stations.append(station)
+                        page_data_records.extend(
+                            extract_page_data_records(
+                                lines, source_file, page_number, station, station.parser_method
+                            )
+                        )
                     else:
                         errors.append(f"{source_file} หน้า {page_number}: ไม่พบข้อมูลสถานี")
                 except Exception as error:  # Keep processing the remaining report pages.
                     errors.append(f"{source_file} หน้า {page_number}: {error}")
     except Exception as error:
         errors.append(f"เปิดไฟล์ {source_file} ไม่สำเร็จ: {error}")
+    return stations, page_data_records, errors
+
+
+def parse_pdf_bytes(
+    source_file: str, source_bytes: bytes, parser_mode: str = "auto"
+) -> tuple[list[StationPage], list[str]]:
+    """Compatibility wrapper that returns only the main-report station pages."""
+    stations, _, errors = parse_document_bytes(source_file, source_bytes, parser_mode)
     return stations, errors
 
 
@@ -652,6 +1161,30 @@ def build_qa_records(stations: Sequence[StationPage]) -> list[dict[str, str]]:
     return records
 
 
+def build_page_data_records(records: Sequence[PageDataRecord]) -> list[dict[str, object]]:
+    """Build the row-based supporting-document output requested for each page type."""
+    output: list[dict[str, object]] = []
+    for record in records:
+        missing_fields = [
+            field for field in record.required_fields if not record.data.get(field, "")
+        ]
+        output.append(
+            {
+                "ไฟล์ต้นทาง": record.source_file,
+                "หน้าต้นทาง": record.page_number,
+                "หน้าที่พบ": record.page_type,
+                **{
+                    column: record.data.get(column, "")
+                    for column in PAGE_DATA_COLUMNS
+                    if column not in {"ไฟล์ต้นทาง", "หน้าต้นทาง", "หน้าที่พบ", "สถานะ", "ข้อมูลที่ไม่พบ"}
+                },
+                "สถานะ": "พร้อมใช้งาน" if not missing_fields else "ต้องตรวจสอบ",
+                "ข้อมูลที่ไม่พบ": ", ".join(missing_fields),
+            }
+        )
+    return output
+
+
 def create_csv_bytes(records: Sequence[dict[str, object]], columns: Sequence[str]) -> bytes:
     """Create a UTF-8-with-BOM CSV so Thai text opens correctly in Excel."""
     output = StringIO(newline="")
@@ -731,13 +1264,16 @@ def _add_license_check_columns(worksheet) -> None:
 
 
 def create_excel_bytes(
-    report_records: Sequence[dict[str, object]], qa_records: Sequence[dict[str, object]]
+    report_records: Sequence[dict[str, object]],
+    qa_records: Sequence[dict[str, object]],
+    page_data_records: Sequence[dict[str, object]] = (),
 ) -> bytes:
-    """Create an Excel report with review data and a licence lookup area."""
+    """Create an Excel report with main data, page-based data and review records."""
     workbook = Workbook()
     workbook.remove(workbook.active)
     _add_excel_sheet(workbook, "Report_Data", report_records, REPORT_COLUMNS)
     _add_license_check_columns(workbook["Report_Data"])
+    _add_excel_sheet(workbook, "ข้อมูลตามหน้า", page_data_records, PAGE_DATA_COLUMNS)
     _add_excel_sheet(workbook, "ตรวจสอบข้อมูล", qa_records, QA_COLUMNS)
 
     workbook.calculation.calcMode = "auto"
